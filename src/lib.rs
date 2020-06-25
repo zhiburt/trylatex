@@ -14,11 +14,11 @@ pub struct Document<'a> {
 impl Document<'_> {
     pub fn new() -> Self {
         let mut body = Boxed::new();
-        body.prep = body.prep.with(Literal("\\begin{document}"));
-        body.after = body.after.with(Literal("\\end{document}"));
+        body.prep = body.prep.with(Macros::new("begin").param("document"));
+        body.after = body.after.with(Macros::new("end").param("document"));
 
         Self {
-            preambule: Preambule::default(),
+            preambule: Preambule::new(),
             body,
         }
     }
@@ -41,49 +41,89 @@ impl Element for Document<'_> {
     }
 }
 
-pub struct Literal<S: AsRef<str>>(S);
+pub struct Macros {
+    m: String,
+    params: Vec<Parameter>,
+}
 
-impl<S: AsRef<str>> Element for Literal<S> {
+impl Macros {
+    pub fn new<S: AsRef<str>>(m: S) -> Self {
+        Self {
+            m: m.as_ref().to_owned(),
+            params: Vec::new(),
+        }
+    }
+
+    pub fn param<P: Into<Parameter>>(mut self, parameter: P) -> Self {
+        self.params.push(parameter.into());
+        self
+    }
+}
+
+impl Element for Macros {
+    fn render(&self) -> String {
+        let params = self.params.iter().map(|p| p.render()).collect::<String>();
+        if !params.is_empty() {
+            format!("\\{}{{{}}}", self.m.clone(), params)
+        } else {
+            format!("\\{}", self.m.clone())
+        }
+    }
+}
+
+pub struct Text<S: AsRef<str>>(S);
+
+impl<S: AsRef<str>> Element for Text<S> {
     fn render(&self) -> String {
         self.0.as_ref().to_owned()
     }
 }
 
-#[derive(Default)]
 pub struct Preambule {
-    r#type: Option<Literal<String>>,
-    author: Option<Literal<String>>,
-    tittle: Option<Literal<String>>,
+    r#type: DocumentType,
+    author: Option<Parameter>,
+    tittle: Option<Parameter>,
+}
+
+pub enum DocumentType {
+    Article,
+}
+
+impl std::fmt::Display for DocumentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DocumentType::Article => f.write_str("article"),
+        }
+    }
 }
 
 impl Preambule {
-    pub fn r#type<L, S>(&mut self, s: L) -> &mut Self
-    where
-        L: Into<Literal<S>>,
-        S: AsRef<str>,
-    {
-        let literal = s.into();
-        self.r#type = Some(Literal(literal.0.as_ref().to_owned()));
+    pub fn new() -> Self {
+        Self {
+            r#type: DocumentType::Article,
+            author: None,
+            tittle: None,
+        }
+    }
+
+    pub fn r#type(&mut self, t: DocumentType) -> &mut Self {
+        self.r#type = t;
         self
     }
 
-    pub fn tittle<L, S>(&mut self, s: L) -> &mut Self
+    pub fn tittle<P>(&mut self, parameter: P) -> &mut Self
     where
-        L: Into<Literal<S>>,
-        S: AsRef<str>,
+        P: Into<Parameter>,
     {
-        let literal = s.into();
-        self.tittle = Some(Literal(literal.0.as_ref().to_owned()));
+        self.tittle = Some(Macros::new("title").param(parameter.into()).into());
         self
     }
 
-    pub fn author<L, S>(&mut self, s: L) -> &mut Self
+    pub fn author<S>(&mut self, author: S) -> &mut Self
     where
-        L: Into<Literal<S>>,
         S: AsRef<str>,
     {
-        let literal = s.into();
-        self.author = Some(Literal(literal.0.as_ref().to_owned()));
+        self.author = Some(Macros::new("author").param(author).into());
         self
     }
 }
@@ -92,37 +132,18 @@ impl Element for Preambule {
     fn render(&self) -> String {
         let mut buf = Vec::new();
 
-        let tp = self
-            .r#type
-            .as_ref()
-            .map_or("article".to_string(), |tp| tp.0.to_string());
-        buf.push(format!("\\documentclass{{{}}}", tp));
+        buf.push(format!("\\documentclass{{{}}}", self.r#type));
 
-        self.tittle
-            .as_ref()
-            .map(|tittle| buf.push(format!("\\title{{{}}}", tittle.0)));
-
-        self.author
-            .as_ref()
-            .map(|author| buf.push(format!("\\author{{{}}}", author.0)));
+        self.tittle.as_ref().map(|tittle| buf.push(tittle.render()));
+        self.author.as_ref().map(|author| buf.push(author.render()));
 
         buf.join("\n")
     }
 }
 
 #[allow(non_snake_case)]
-pub fn Tittle<S: AsRef<str>>(tittle: S) -> Literal<S> {
-    Literal(tittle)
-}
-
-#[allow(non_snake_case)]
-pub fn Author<S: AsRef<str>>(tittle: S) -> Literal<S> {
-    Literal(tittle)
-}
-
-#[allow(non_snake_case)]
-pub fn Text<S: AsRef<str>>(tittle: S) -> Literal<S> {
-    Literal(tittle)
+pub fn LaTeX() -> Macros {
+    Macros::new("LaTeX")
 }
 
 pub struct Boxed<'a> {
@@ -176,6 +197,32 @@ impl Element for Area<'_> {
     }
 }
 
+pub enum Parameter {
+    Literal(String),
+    Macros(Macros),
+}
+
+impl<S: AsRef<str>> From<S> for Parameter {
+    fn from(s: S) -> Parameter {
+        Parameter::Literal(s.as_ref().to_owned())
+    }
+}
+
+impl Into<Parameter> for Macros {
+    fn into(self) -> Parameter {
+        Parameter::Macros(self)
+    }
+}
+
+impl Element for Parameter {
+    fn render(&self) -> String {
+        match self {
+            Self::Literal(l) => l.clone(),
+            Self::Macros(m) => m.render(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,10 +239,7 @@ something
 ";
 
         let mut doc = Document::new();
-        doc.preambule
-            .r#type(Literal("article"))
-            .tittle(Literal("\\LaTeX"))
-            .author(Literal("Maxim Zhiburt"));
+        doc.preambule.tittle(LaTeX()).author("Maxim Zhiburt");
 
         let doc = doc.with(Text("something"));
 
